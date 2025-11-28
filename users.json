@@ -1,7 +1,8 @@
 {
-  "PlasmaPrime": {
-    "passwordHash": "$2b$10$hQunXhqXuOjgsWdpXjPTwOS0x8fJl2zOk1rMpVfiuKFC5vNCR61Fe",
-    "balance": 1000,
+  "admin": {
+    "passwordHash": "$2b$10$.GwKGdCbAt0kFUV.KPjV2uLPpzq5e3grTRQaBogGfkBw8DA8n4w/K",
+    "balance": 999999999,
+    "role": "admin",
     "history": []
   }
 }
