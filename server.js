@@ -480,6 +480,14 @@ app.get("/db-test", async (req, res) => {
   }
 });
 
+// --------- LOGOUT ---------
+app.get("/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.redirect("/login");
+  });
+});
+
+
 app.listen(PORT, () => {
   console.log(`✅ Dorks Bank running at http://localhost:${PORT}`);
 });
