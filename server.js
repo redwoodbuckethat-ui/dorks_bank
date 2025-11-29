@@ -261,6 +261,8 @@ app.post("/login", async (req, res) => {
 // --- DASHBOARD ---
 app.get("/dashboard", requireLogin, async (req, res) => {
   const username = req.session.username;
+  const showSentMessage = req.query.sent === "1";
+  const errorType = req.query.error;
 
   try {
     // 1. Get current user's balance
@@ -279,7 +281,7 @@ app.get("/dashboard", requireLogin, async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // 2. Get other users
+    // 2. Get other users for "send money" dropdown
     const othersResult = await pool.query(
       `
       SELECT username
@@ -296,7 +298,7 @@ app.get("/dashboard", requireLogin, async (req, res) => {
       )
       .join("");
 
-    // 3. Get transactions
+    // 3. Get recent transactions involving this user
     const txResult = await pool.query(
       `
       SELECT from_user, to_user, amount, created_at
@@ -325,7 +327,7 @@ app.get("/dashboard", requireLogin, async (req, res) => {
       })
       .join("");
 
-    // 4. Render
+    // 4. Render dashboard
     res.send(
       layout(
         "Dashboard",
@@ -333,6 +335,17 @@ app.get("/dashboard", requireLogin, async (req, res) => {
         <p style="text-align:center;">
           Logged in as <strong>${username}</strong>
         </p>
+
+<div class="toast-slot">
+  ${
+    showSentMessage
+      ? '<div class="toast success">✅ Money sent!</div>'
+      : errorType === "insufficient"
+      ? '<div class="toast error">❌ Not enough money</div>'
+      : '<div class="toast placeholder"></div>'
+  }
+</div>
+
 
         <div class="section balance-card">
           <h2>Your balance</h2>
@@ -347,12 +360,12 @@ app.get("/dashboard", requireLogin, async (req, res) => {
               ? `
           <form method="POST" action="/transfer">
             <label>To</label>
-            <select name="toUser">
+            <select name="toUser" required>
               ${otherUsersOptions}
             </select>
 
             <label>Amount</label>
-            <input name="amount" type="number" min="1" required />
+            <input name="amount" type="number" min="1" step="1" required />
 
             <button type="submit">Send money</button>
           </form>
@@ -371,6 +384,17 @@ app.get("/dashboard", requireLogin, async (req, res) => {
         <p style="text-align:center; margin-top: 24px;">
           <a href="/logout">Log out</a>
         </p>
+
+        <script>
+  (function () {
+    if (
+      window.location.search.includes("sent=1") ||
+      window.location.search.includes("error=")
+    ) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  })();
+</script>
         `
       )
     );
@@ -379,6 +403,8 @@ app.get("/dashboard", requireLogin, async (req, res) => {
     res.status(500).send("Error loading dashboard");
   }
 });
+
+
 
 // -------------- TRANSFER ---------------
 
@@ -436,7 +462,7 @@ app.post("/transfer", requireLogin, async (req, res) => {
 
     // Check funds (admin bypass)
     if (fromRole !== "admin" && senderBalance < amountNumber) {
-      throw new Error("Not enough money");
+      return res.redirect("/dashboard?error=insufficient");
     }
 
     // Update balances
@@ -470,7 +496,7 @@ app.post("/transfer", requireLogin, async (req, res) => {
     );
 
     await client.query("COMMIT");
-    res.redirect("/dashboard");
+    res.redirect("/dashboard?sent=1");
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err.message);
