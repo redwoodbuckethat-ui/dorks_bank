@@ -380,6 +380,106 @@ app.get("/dashboard", requireLogin, async (req, res) => {
   }
 });
 
+// -------------- TRANSFER ---------------
+
+app.post("/transfer", requireLogin, async (req, res) => {
+  const fromUser = req.session.username;
+  const fromRole = req.session.role;
+  const { toUser, amount } = req.body;
+
+  const amountNumber = Number(amount);
+
+  if (!toUser || !Number.isFinite(amountNumber) || amountNumber <= 0) {
+    return res.send("Invalid transfer. <a href='/dashboard'>Back</a>");
+  }
+
+  if (toUser === fromUser) {
+    return res.send("You can't send money to yourself. <a href='/dashboard'>Back</a>");
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Fetch sender (lock row)
+    const senderResult = await client.query(
+      `
+      SELECT balance
+      FROM users
+      WHERE username = $1
+      FOR UPDATE
+      `,
+      [fromUser]
+    );
+
+    if (senderResult.rows.length === 0) {
+      throw new Error("Sender not found");
+    }
+
+    const senderBalance = senderResult.rows[0].balance;
+
+    // Fetch receiver (lock row)
+    const receiverResult = await client.query(
+      `
+      SELECT balance
+      FROM users
+      WHERE username = $1
+      FOR UPDATE
+      `,
+      [toUser]
+    );
+
+    if (receiverResult.rows.length === 0) {
+      throw new Error("Receiver does not exist");
+    }
+
+    // Check funds (admin bypass)
+    if (fromRole !== "admin" && senderBalance < amountNumber) {
+      throw new Error("Not enough money");
+    }
+
+    // Update balances
+    if (fromRole !== "admin") {
+      await client.query(
+        `
+        UPDATE users
+        SET balance = balance - $1
+        WHERE username = $2
+        `,
+        [amountNumber, fromUser]
+      );
+    }
+
+    await client.query(
+      `
+      UPDATE users
+      SET balance = balance + $1
+      WHERE username = $2
+      `,
+      [amountNumber, toUser]
+    );
+
+    // Record transaction
+    await client.query(
+      `
+      INSERT INTO transactions (from_user, to_user, amount)
+      VALUES ($1, $2, $3)
+      `,
+      [fromUser, toUser, amountNumber]
+    );
+
+    await client.query("COMMIT");
+    res.redirect("/dashboard");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err.message);
+    res.send(err.message + ". <a href='/dashboard'>Back</a>");
+  } finally {
+    client.release();
+  }
+});
+
 
 
 // --------- START SERVER ---------
