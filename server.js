@@ -7,6 +7,12 @@ const session = require("express-session");
 const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
+const { Pool } = require("pg");
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -54,7 +60,7 @@ app.use(
 
 // --------- AUTH MIDDLEWARE ---------
 function requireLogin(req, res, next) {
-  if (!req.session.username || !users[req.session.username]) {
+  if (!req.session.userId) {
     return res.redirect("/login");
   }
   next();
@@ -111,31 +117,58 @@ app.get("/signup", (req, res) => {
   );
 });
 
-app.post("/signup", (req, res) => {
+app.post("/signup", async (req, res) => {
   const username = (req.body.username || "").trim();
   const password = req.body.password || "";
 
   if (!username || !password) {
-    return res.redirect("/signup?error=" + encodeURIComponent("Username and password are required."));
+    return res.redirect(
+      "/signup?error=" +
+        encodeURIComponent("Username and password are required.")
+    );
   }
-  if (users[username]) {
-    return res.redirect("/signup?error=" + encodeURIComponent("That username is taken."));
-  }
+
   if (password.length < 4) {
-    return res.redirect("/signup?error=" + encodeURIComponent("Password must be at least 4 characters."));
+    return res.redirect(
+      "/signup?error=" +
+        encodeURIComponent("Password must be at least 4 characters.")
+    );
   }
 
-  const passwordHash = bcrypt.hashSync(password, 10);
-  users[username] = {
-    passwordHash,
-    balance: 1000, // starting balance
-    history: [],
-  };
-  saveUsers();
+  try {
+    // 1. Hash password
+    const passwordHash = await bcrypt.hash(password, 10);
 
-  req.session.username = username;
-  res.redirect("/dashboard");
+    // 2. Insert into Supabase (Postgres)
+    await pool.query(
+      `
+      INSERT INTO users (username, password_hash, role, balance)
+      VALUES ($1, $2, 'user', 0)
+      `,
+      [username, passwordHash]
+    );
+
+    // 3. Log user in
+    req.session.username = username;
+    req.session.role = "user";
+
+    res.redirect("/dashboard");
+  } catch (err) {
+    // Duplicate username (unique constraint)
+    if (err.code === "23505") {
+      return res.redirect(
+        "/signup?error=" + encodeURIComponent("That username is taken.")
+      );
+    }
+
+    console.error(err);
+    res.redirect(
+      "/signup?error=" +
+        encodeURIComponent("Something went wrong. Please try again.")
+    );
+  }
 });
+
 
 // --- LOGIN ---
 app.get("/login", (req, res) => {
@@ -163,123 +196,290 @@ app.get("/login", (req, res) => {
   );
 });
 
-app.post("/login", (req, res) => {
+app.post("/login", async (req, res) => {
   const username = (req.body.username || "").trim();
   const password = req.body.password || "";
-  const user = users[username];
 
-  if (!user) {
-    return res.redirect("/login?error=" + encodeURIComponent("Invalid username or password."));
+  if (!username || !password) {
+    return res.redirect(
+      "/login?error=" + encodeURIComponent("Invalid username or password.")
+    );
   }
 
-  const ok = bcrypt.compareSync(password, user.passwordHash);
-  if (!ok) {
-    return res.redirect("/login?error=" + encodeURIComponent("Invalid username or password."));
+  try {
+    // 1. Look up user in database
+    const result = await pool.query(
+      `
+      SELECT id, password_hash, role
+      FROM users
+      WHERE username = $1
+      `,
+      [username]
+    );
+
+    if (result.rows.length === 0) {
+      return res.redirect(
+        "/login?error=" + encodeURIComponent("Invalid username or password.")
+      );
+    }
+
+    const user = result.rows[0];
+
+    // 2. Check password
+    const ok = await bcrypt.compare(password, user.password_hash);
+    if (!ok) {
+      return res.redirect(
+        "/login?error=" + encodeURIComponent("Invalid username or password.")
+      );
+    }
+
+    // 3. Store session info
+    // ✅ SAVE SESSION BEFORE REDIRECT
+    req.session.userId = user.id;
+    req.session.username = username;
+    req.session.role = user.role;
+
+    req.session.save(() => {
+      res.redirect("/dashboard");
+    });
+  } catch (err) {
+    console.error(err);
+    res.redirect(
+      "/login?error=" +
+        encodeURIComponent("Something went wrong. Please try again.")
+    );
   }
-
-  req.session.username = username;
-  res.redirect("/dashboard");
 });
 
-// --- LOGOUT ---
-app.get("/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.redirect("/login");
-  });
-});
 
 // --- DASHBOARD ---
-app.get("/dashboard", requireLogin, (req, res) => {
+app.get("/dashboard", requireLogin, async (req, res) => {
   const username = req.session.username;
-  const user = users[username];
 
-  const otherUsersOptions = Object.keys(users)
-    .filter((name) => name !== username)
-    .map((name) => `<option value="${name}">${name}</option>`)
-    .join("");
-
-  const historyHtml = (user.history || [])
-    .map((line) => `<li>${line}</li>`)
-    .join("");
-
-  res.send(
-    layout(
-      "Dashboard",
+  try {
+    // 1. Get current user's balance
+    const userResult = await pool.query(
       `
-      <p>Logged in as <strong>${username}</strong></p>
-      <p>Your balance: <strong>${user.balance}</strong></p>
+      SELECT balance
+      FROM users
+      WHERE username = $1
+      `,
+      [username]
+    );
 
-      <h2>Send money</h2>
-      ${
-        otherUsersOptions
-          ? `
-      <form method="POST" action="/transfer">
-        <label>To:
-          <select name="toUser">
-            ${otherUsersOptions}
-          </select>
-        </label>
-        <br/><br/>
-        <label>Amount:
-          <input name="amount" type="number" step="1" min="1" required />
-        </label>
-        <br/><br/>
-        <button type="submit">Send</button>
-      </form>
+    if (userResult.rows.length === 0) {
+      // Session says user exists, but DB doesn't → log them out
+      return res.redirect("/logout");
+    }
+
+    const user = userResult.rows[0];
+
+    // 2. Get other users for the "send money" dropdown
+    const othersResult = await pool.query(
       `
-          : "<p>No other users yet to send money to.</p>"
-      }
+      SELECT username
+      FROM users
+      WHERE username != $1
+      ORDER BY username
+      `,
+      [username]
+    );
 
-      <h2>Recent activity</h2>
-      <ul>
-        ${historyHtml || "<li>No activity yet</li>"}
-      </ul>
+    const otherUsersOptions = othersResult.rows
+      .map(
+        (row) =>
+          `<option value="${row.username}">${row.username}</option>`
+      )
+      .join("");
 
-      <p><a href="/logout">Log out</a></p>
+    // 3. Get recent transactions involving this user
+    const txResult = await pool.query(
       `
-    )
-  );
+      SELECT from_user, to_user, amount, created_at
+      FROM transactions
+      WHERE from_user = $1 OR to_user = $1
+      ORDER BY created_at DESC
+      LIMIT 10
+      `,
+      [username]
+    );
+
+    // 4. Turn transactions into <li> items
+    const historyItems = txResult.rows
+      .map((tx) => {
+        const isSender = tx.from_user === username;
+        const direction = isSender ? "Sent" : "Received";
+        const otherParty = isSender ? tx.to_user : tx.from_user;
+        const time = new Date(tx.created_at).toLocaleString();
+
+        return `
+          <li>
+            ${direction} <strong>${tx.amount}</strong>
+            ${isSender ? "to" : "from"} <strong>${otherParty}</strong>
+            <span style="color: gray;">(${time})</span>
+          </li>
+        `;
+      })
+      .join("");
+
+    // 5. Render page
+    res.send(
+      layout(
+        "Dashboard",
+        `
+        <p>Logged in as <strong>${username}</strong></p>
+        <p>Your balance: <strong>${user.balance}</strong></p>
+
+        <h2>Send money</h2>
+        ${
+          otherUsersOptions
+            ? `
+        <form method="POST" action="/transfer">
+          <label>To:
+            <select name="toUser">
+              ${otherUsersOptions}
+            </select>
+          </label>
+          <br/><br/>
+          <label>Amount:
+            <input name="amount" type="number" step="1" min="1" required />
+          </label>
+          <br/><br/>
+          <button type="submit">Send</button>
+        </form>
+        `
+            : "<p>No other users yet to send money to.</p>"
+        }
+
+        <h2>Recent activity</h2>
+        <ul>
+          ${historyItems || "<li>No recent transactions.</li>"}
+        </ul>
+
+        <p><a href="/logout">Log out</a></p>
+        `
+      )
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Error loading dashboard");
+  }
 });
 
+
 // --- TRANSFER ---
-app.post("/transfer", requireLogin, (req, res) => {
+app.post("/transfer", requireLogin, async (req, res) => {
   const fromUser = req.session.username;
+  const fromRole = req.session.role;
   const { toUser, amount } = req.body;
 
   const amountNumber = Number(amount);
 
-  if (!users[toUser]) {
-    return res.send("That user does not exist. <a href='/dashboard'>Back</a>");
+  if (!toUser || !Number.isFinite(amountNumber) || amountNumber <= 0) {
+    return res.send("Invalid transfer. <a href='/dashboard'>Back</a>");
   }
-  if (!Number.isFinite(amountNumber) || amountNumber <= 0) {
-    return res.send("Invalid amount. <a href='/dashboard'>Back</a>");
-  }
+
   if (toUser === fromUser) {
     return res.send("You can't send money to yourself. <a href='/dashboard'>Back</a>");
   }
 
-  const sender = users[fromUser];
-  const receiver = users[toUser];
+  const client = await pool.connect();
 
-  if (sender.balance < amountNumber) {
-    return res.send("Not enough money! <a href='/dashboard'>Back</a>");
+  try {
+    await client.query("BEGIN");
+
+    // 1. Fetch sender
+    const senderResult = await client.query(
+      `
+      SELECT balance
+      FROM users
+      WHERE username = $1
+      FOR UPDATE
+      `,
+      [fromUser]
+    );
+
+    if (senderResult.rows.length === 0) {
+      throw new Error("Sender not found");
+    }
+
+    const senderBalance = senderResult.rows[0].balance;
+
+    // 2. Fetch receiver
+    const receiverResult = await client.query(
+      `
+      SELECT balance
+      FROM users
+      WHERE username = $1
+      FOR UPDATE
+      `,
+      [toUser]
+    );
+
+    if (receiverResult.rows.length === 0) {
+      throw new Error("Receiver does not exist");
+    }
+
+    // 3. Check funds (admin has infinite money)
+    if (fromRole !== "admin" && senderBalance < amountNumber) {
+      throw new Error("Not enough money");
+    }
+
+    // 4. Update balances
+    if (fromRole !== "admin") {
+      await client.query(
+        `
+        UPDATE users
+        SET balance = balance - $1
+        WHERE username = $2
+        `,
+        [amountNumber, fromUser]
+      );
+    }
+
+    await client.query(
+      `
+      UPDATE users
+      SET balance = balance + $1
+      WHERE username = $2
+      `,
+      [amountNumber, toUser]
+    );
+
+await client.query(
+  `
+  INSERT INTO transactions (from_user, to_user, amount)
+  VALUES ($1, $2, $3)
+  `,
+  [fromUser, toUser, amountNumber]
+);
+
+    await client.query("COMMIT");
+    res.redirect("/dashboard");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err.message);
+
+    res.send(
+      err.message +
+        ". <a href='/dashboard'>Back</a>"
+    );
+  } finally {
+    client.release();
   }
-
-  sender.balance -= amountNumber;
-  receiver.balance += amountNumber;
-
-  const time = new Date().toLocaleString();
-  sender.history = sender.history || [];
-  receiver.history = receiver.history || [];
-
-  sender.history.unshift(`Sent ${amountNumber} to ${toUser} at ${time}`);
-  receiver.history.unshift(`Received ${amountNumber} from ${fromUser} at ${time}`);
-
-  saveUsers();
-  res.redirect("/dashboard");
 });
 
 // --------- START SERVER ---------
+app.get("/db-test", async (req, res) => {
+  try {
+    const result = await pool.query("select 1 + 1 as answer");
+    res.json({ ok: true, answer: result.rows[0].answer });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`✅ Dorks Bank running at http://localhost:${PORT}`);
 });
