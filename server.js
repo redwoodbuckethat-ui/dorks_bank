@@ -79,7 +79,10 @@ function layout(title, body) {
       <link rel="stylesheet" href="/style.css">
     </head>
     <body>
-      ${body}
+      <div class="container">
+        <h1>Dorks Bank</h1>
+        ${body}
+      </div>
     </body>
   </html>
   `;
@@ -271,13 +274,12 @@ app.get("/dashboard", requireLogin, async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
-      // Session says user exists, but DB doesn't → log them out
       return res.redirect("/logout");
     }
 
     const user = userResult.rows[0];
 
-    // 2. Get other users for the "send money" dropdown
+    // 2. Get other users
     const othersResult = await pool.query(
       `
       SELECT username
@@ -290,12 +292,11 @@ app.get("/dashboard", requireLogin, async (req, res) => {
 
     const otherUsersOptions = othersResult.rows
       .map(
-        (row) =>
-          `<option value="${row.username}">${row.username}</option>`
+        (row) => `<option value="${row.username}">${row.username}</option>`
       )
       .join("");
 
-    // 3. Get recent transactions involving this user
+    // 3. Get transactions
     const txResult = await pool.query(
       `
       SELECT from_user, to_user, amount, created_at
@@ -307,7 +308,6 @@ app.get("/dashboard", requireLogin, async (req, res) => {
       [username]
     );
 
-    // 4. Turn transactions into <li> items
     const historyItems = txResult.rows
       .map((tx) => {
         const isSender = tx.from_user === username;
@@ -325,41 +325,52 @@ app.get("/dashboard", requireLogin, async (req, res) => {
       })
       .join("");
 
-    // 5. Render page
+    // 4. Render
     res.send(
       layout(
         "Dashboard",
         `
-        <p>Logged in as <strong>${username}</strong></p>
-        <p>Your balance: <strong>${user.balance}</strong></p>
+        <p style="text-align:center;">
+          Logged in as <strong>${username}</strong>
+        </p>
 
-        <h2>Send money</h2>
-        ${
-          otherUsersOptions
-            ? `
-        <form method="POST" action="/transfer">
-          <label>To:
+        <div class="section balance-card">
+          <h2>Your balance</h2>
+          <div class="balance">$${user.balance}</div>
+        </div>
+
+        <div class="section card">
+          <h2>Send money</h2>
+
+          ${
+            otherUsersOptions
+              ? `
+          <form method="POST" action="/transfer">
+            <label>To</label>
             <select name="toUser">
               ${otherUsersOptions}
             </select>
-          </label>
-          <br/><br/>
-          <label>Amount:
-            <input name="amount" type="number" step="1" min="1" required />
-          </label>
-          <br/><br/>
-          <button type="submit">Send</button>
-        </form>
-        `
-            : "<p>No other users yet to send money to.</p>"
-        }
 
-        <h2>Recent activity</h2>
-        <ul>
-          ${historyItems || "<li>No recent transactions.</li>"}
-        </ul>
+            <label>Amount</label>
+            <input name="amount" type="number" min="1" required />
 
-        <p><a href="/logout">Log out</a></p>
+            <button type="submit">Send money</button>
+          </form>
+          `
+              : "<p>No other users yet.</p>"
+          }
+        </div>
+
+        <div class="section card">
+          <h2>Recent activity</h2>
+          <ul class="transaction-list">
+            ${historyItems || "<li>No recent transactions.</li>"}
+          </ul>
+        </div>
+
+        <p style="text-align:center; margin-top: 24px;">
+          <a href="/logout">Log out</a>
+        </p>
         `
       )
     );
@@ -370,107 +381,6 @@ app.get("/dashboard", requireLogin, async (req, res) => {
 });
 
 
-// --- TRANSFER ---
-app.post("/transfer", requireLogin, async (req, res) => {
-  const fromUser = req.session.username;
-  const fromRole = req.session.role;
-  const { toUser, amount } = req.body;
-
-  const amountNumber = Number(amount);
-
-  if (!toUser || !Number.isFinite(amountNumber) || amountNumber <= 0) {
-    return res.send("Invalid transfer. <a href='/dashboard'>Back</a>");
-  }
-
-  if (toUser === fromUser) {
-    return res.send("You can't send money to yourself. <a href='/dashboard'>Back</a>");
-  }
-
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    // 1. Fetch sender
-    const senderResult = await client.query(
-      `
-      SELECT balance
-      FROM users
-      WHERE username = $1
-      FOR UPDATE
-      `,
-      [fromUser]
-    );
-
-    if (senderResult.rows.length === 0) {
-      throw new Error("Sender not found");
-    }
-
-    const senderBalance = senderResult.rows[0].balance;
-
-    // 2. Fetch receiver
-    const receiverResult = await client.query(
-      `
-      SELECT balance
-      FROM users
-      WHERE username = $1
-      FOR UPDATE
-      `,
-      [toUser]
-    );
-
-    if (receiverResult.rows.length === 0) {
-      throw new Error("Receiver does not exist");
-    }
-
-    // 3. Check funds (admin has infinite money)
-    if (fromRole !== "admin" && senderBalance < amountNumber) {
-      throw new Error("Not enough money");
-    }
-
-    // 4. Update balances
-    if (fromRole !== "admin") {
-      await client.query(
-        `
-        UPDATE users
-        SET balance = balance - $1
-        WHERE username = $2
-        `,
-        [amountNumber, fromUser]
-      );
-    }
-
-    await client.query(
-      `
-      UPDATE users
-      SET balance = balance + $1
-      WHERE username = $2
-      `,
-      [amountNumber, toUser]
-    );
-
-await client.query(
-  `
-  INSERT INTO transactions (from_user, to_user, amount)
-  VALUES ($1, $2, $3)
-  `,
-  [fromUser, toUser, amountNumber]
-);
-
-    await client.query("COMMIT");
-    res.redirect("/dashboard");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    console.error(err.message);
-
-    res.send(
-      err.message +
-        ". <a href='/dashboard'>Back</a>"
-    );
-  } finally {
-    client.release();
-  }
-});
 
 // --------- START SERVER ---------
 app.get("/db-test", async (req, res) => {

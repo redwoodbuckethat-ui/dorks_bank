@@ -84,3 +84,53 @@ a:hover {
   margin-top: 16px;
   text-align: center;
 }
+
+/* --- Dashboard sections --- */
+.section {
+  margin-top: 32px;
+}
+
+/* --- Balance card --- */
+.balance-card {
+  background: #f0f4ff;
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.balance-card h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  color: #555;
+}
+
+.balance-card .balance {
+  font-size: 2.8rem;
+  font-weight: bold;
+  margin-top: 8px;
+  color: #4f46e5;
+}
+
+/* --- Card style --- */
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+}
+
+/* --- Transaction list --- */
+.transaction-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.transaction-list li {
+  padding: 12px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.transaction-list li:last-child {
+  border-bottom: none;
+}
+
