@@ -50,6 +50,8 @@ loadUsers();
 // --------- EXPRESS + SESSIONS ---------
 app.use(express.urlencoded({ extended: true }));
 
+app.use(express.static("public"));
+
 app.use(
   session({
     secret: "dorks-bank-secret",
@@ -74,14 +76,15 @@ function layout(title, body) {
     <head>
       <meta charset="utf-8" />
       <title>Dorks Bank - ${title}</title>
+      <link rel="stylesheet" href="/style.css">
     </head>
     <body>
-      <h1>Dorks Bank</h1>
       ${body}
     </body>
   </html>
   `;
 }
+
 
 // --------- ROUTES ---------
 app.get("/", (req, res) => {
