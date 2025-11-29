@@ -265,7 +265,7 @@ app.get("/dashboard", requireLogin, async (req, res) => {
   const errorType = req.query.error;
 
   try {
-    // 1. Get current user's balance
+    // 1. User balance
     const userResult = await pool.query(
       `
       SELECT balance
@@ -281,7 +281,7 @@ app.get("/dashboard", requireLogin, async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // 2. Get other users for "send money" dropdown
+    // 2. Other users
     const othersResult = await pool.query(
       `
       SELECT username
@@ -292,20 +292,16 @@ app.get("/dashboard", requireLogin, async (req, res) => {
       [username]
     );
 
-    const otherUsersOptions = othersResult.rows
-      .map(
-        (row) => `<option value="${row.username}">${row.username}</option>`
-      )
-      .join("");
+    const allUsernames = othersResult.rows.map((r) => r.username);
 
-    // 3. Get recent transactions involving this user
+    // 3. Transactions
     const txResult = await pool.query(
       `
       SELECT from_user, to_user, amount, created_at
       FROM transactions
       WHERE from_user = $1 OR to_user = $1
       ORDER BY created_at DESC
-      LIMIT 10
+      LIMIT 30
       `,
       [username]
     );
@@ -327,7 +323,18 @@ app.get("/dashboard", requireLogin, async (req, res) => {
       })
       .join("");
 
-    // 4. Render dashboard
+    // 4. Recent recipients
+    const recentRecipients = [];
+    for (const tx of txResult.rows) {
+      const other =
+        tx.from_user === username ? tx.to_user : tx.from_user;
+      if (!recentRecipients.includes(other)) {
+        recentRecipients.push(other);
+      }
+      if (recentRecipients.length >= 3) break;
+    }
+
+    // 5. Render
     res.send(
       layout(
         "Dashboard",
@@ -336,16 +343,15 @@ app.get("/dashboard", requireLogin, async (req, res) => {
           Logged in as <strong>${username}</strong>
         </p>
 
-<div class="toast-slot">
-  ${
-    showSentMessage
-      ? '<div class="toast success">✅ Money sent!</div>'
-      : errorType === "insufficient"
-      ? '<div class="toast error">❌ Not enough money</div>'
-      : '<div class="toast placeholder"></div>'
-  }
-</div>
-
+        <div class="toast-slot">
+          ${
+            showSentMessage
+              ? '<div class="toast success">✅ Money sent!</div>'
+              : errorType === "insufficient"
+              ? '<div class="toast error">❌ Not enough money</div>'
+              : '<div class="toast placeholder"></div>'
+          }
+        </div>
 
         <div class="section balance-card">
           <h2>Your balance</h2>
@@ -356,13 +362,34 @@ app.get("/dashboard", requireLogin, async (req, res) => {
           <h2>Send money</h2>
 
           ${
-            otherUsersOptions
+            allUsernames.length
               ? `
           <form method="POST" action="/transfer">
             <label>To</label>
-            <select name="toUser" required>
-              ${otherUsersOptions}
-            </select>
+            <input
+              type="text"
+              name="toUser"
+              id="toUserInput"
+              autocomplete="off"
+              placeholder="Start typing a name..."
+              required
+            />
+
+            <div id="recipientSuggestions" class="suggestions"></div>
+
+            <div class="recent-row">
+              <span class="recent-label">Recent:</span>
+              ${
+                recentRecipients.length
+                  ? recentRecipients
+                      .map(
+                        (name) =>
+                          `<button type="button" class="recent-chip" data-name="${name}">${name}</button>`
+                      )
+                      .join("")
+                  : `<span class="recent-empty">None yet</span>`
+              }
+            </div>
 
             <label>Amount</label>
             <input name="amount" type="number" min="1" step="1" required />
@@ -386,15 +413,85 @@ app.get("/dashboard", requireLogin, async (req, res) => {
         </p>
 
         <script>
-  (function () {
-    if (
-      window.location.search.includes("sent=1") ||
-      window.location.search.includes("error=")
-    ) {
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  })();
-</script>
+          (function () {
+            if (
+              window.location.search.includes("sent=1") ||
+              window.location.search.includes("error=")
+            ) {
+              window.history.replaceState(
+                {},
+                "",
+                window.location.pathname
+              );
+            }
+
+            const allUsernames = ${JSON.stringify(allUsernames)};
+            const recentRecipients = ${JSON.stringify(recentRecipients)};
+            const input = document.getElementById("toUserInput");
+            const suggestions = document.getElementById("recipientSuggestions");
+            const recentRow = document.querySelector(".recent-row");
+
+            function render() {
+              if (!input) return;
+              const q = input.value.toLowerCase();
+              const list = q
+  ? allUsernames.filter((n) =>
+      n.toLowerCase().includes(q)
+    )
+  : [];
+
+
+              if (!list.length) {
+                suggestions.innerHTML = "";
+                suggestions.style.display = "none";
+                return;
+              }
+
+              suggestions.innerHTML = list
+                .map(
+                  (n) =>
+                    '<div class="suggestion-item" data-name="' +
+                    n +
+                    '">' +
+                    n +
+                    "</div>"
+                )
+                .join("");
+              suggestions.style.display = "block";
+            }
+
+            if (input) {
+              input.addEventListener("input", render);
+            }
+
+            suggestions?.addEventListener("click", (e) => {
+              const item = e.target.closest(".suggestion-item");
+              if (!item) return;
+              input.value = item.dataset.name;
+              suggestions.innerHTML = "";
+              suggestions.style.display = "none";
+            });
+
+            recentRow?.addEventListener("click", (e) => {
+              const chip = e.target.closest(".recent-chip");
+              if (!chip) return;
+              input.value = chip.dataset.name;
+              render();
+            });
+
+            document.addEventListener("click", (e) => {
+              if (
+                e.target !== input &&
+                !e.target.closest("#recipientSuggestions")
+              ) {
+                suggestions.innerHTML = "";
+                suggestions.style.display = "none";
+              }
+            });
+
+            render();
+          })();
+        </script>
         `
       )
     );

@@ -191,3 +191,58 @@ a:hover {
   }
 }
 
+/* --- Recipient suggestions --- */
+.suggestions {
+  margin-top: 6px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  max-height: 180px;
+  overflow-y: auto;
+  display: none;
+  background: white;
+}
+
+.suggestion-item {
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.suggestion-item:hover {
+  background: #eef2ff;
+}
+
+/* --- Recent recipients row --- */
+.recent-row {
+  margin-top: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.recent-label {
+  font-size: 0.9rem;
+  color: #6b7280;
+  margin-right: 4px;
+}
+
+.recent-chip {
+  border: none;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.recent-chip:hover {
+  background: #e0e7ff;
+}
+
+.recent-empty {
+  font-size: 0.9rem;
+  color: #9ca3af;
+}
+
